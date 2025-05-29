@@ -1,27 +1,43 @@
-import streamlit as st
-import pandas as pd
+"""
+Hotel Room Price Scraper - A Streamlit web application for scraping hotel room prices from Booking.com.
+
+This application allows users to:
+1. Select a country and currency
+2. Input multiple hotel URL names
+3. Choose a start date for price checking
+4. Fetch and display room prices and details
+5. Download results as CSV
+
+The app uses async HTTP requests to efficiently fetch data from multiple hotels and date ranges.
+"""
+
+# Standard library imports
+import asyncio
 import random
+import re
 import time
 from datetime import datetime, timedelta
-import asyncio
-import aiohttp
-from bs4 import BeautifulSoup
-import re
 from typing import List, Tuple
-import pycountry
 
+# Third-party imports
+import aiohttp
+import pandas as pd
+import pycountry
+import streamlit as st
+from bs4 import BeautifulSoup
+
+# Constants
+DEFAULT_MAX_CONCURRENT = 10
+DEFAULT_SEARCH_DAYS = 365
+DEFAULT_STAY_DURATION = 7
+DEFAULT_CURRENCY = "USD"
+USER_AGENT = 'Mozilla/5.0 (X11; CrOS x86_64 8172.45.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.64 Safari/537.36'
+
+# Web scraping functions
 async def fetch_hotel_page(session: aiohttp.ClientSession, url: str) -> str:
-    """Fetch HTML content of a hotel page using aiohttp.
-    
-    Args:
-        session: aiohttp client session
-        url: URL of the hotel page to fetch
-        
-    Returns:
-        HTML content as string or empty string if request fails
-    """
+    """Fetch HTML content of a hotel page using aiohttp."""
     headers = {
-        'User-Agent': 'Mozilla/5.0 (X11; CrOS x86_64 8172.45.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.64 Safari/537.36',
+        'User-Agent': USER_AGENT,
         'Accept-Language': 'en-US, en;q=0.5'
     }
     try:
@@ -32,42 +48,9 @@ async def fetch_hotel_page(session: aiohttp.ClientSession, url: str) -> str:
         print(f"Error fetching {url}: {str(e)}")
         return ""
 
-async def get_hotel_details_async(session: aiohttp.ClientSession, hotel_url_name: str, 
-                                 check_in_date: str, check_out_date: str, 
-                                 country: str, currency: str) -> pd.DataFrame:
-    """Fetch and parse hotel details for a specific date range.
-    
-    Args:
-        session: aiohttp client session
-        hotel_url_name: URL-friendly name of the hotel
-        check_in_date: Check-in date in YYYY-MM-DD format
-        check_out_date: Check-out date in YYYY-MM-DD format
-        country: 2-letter country code
-        currency: 3-letter currency code
-        
-    Returns:
-        DataFrame containing hotel room details
-    """
-    url = f'https://www.booking.com/hotel/{country}/{hotel_url_name}.en-gb.html?checkin={check_in_date};checkout={check_out_date};dist=0;group_adults=2;group_children=0;selected_currency={currency}'
-    
-    html = await fetch_hotel_page(session, url)
-    if not html:
-        return pd.DataFrame()
-    
-    hotel_details = await parse_hotel_page(html, hotel_url_name, check_in_date, check_out_date, url)
-    return hotel_details
-
-def extract_room_area(row):
-    """Extract room area information from HTML row.
-    
-    Args:
-        row: BeautifulSoup row element containing room details
-        
-    Returns:
-        Tuple of (area_value, area_unit) if found, else None
-    """
+def extract_room_area(row) -> Tuple[float, str]:
+    """Extract room area information from HTML row."""
     try:
-        # Find elements that might contain area information
         area_elements = row.find_all(['span', 'div'], class_=lambda x: x and any(
             cls in str(x) for cls in ['bui-badge', 'room-size', 'facility', 'hprt-facility']
         ))
@@ -87,20 +70,12 @@ def extract_room_area(row):
                 return (room_area, area_unit)
                 
         return None
-
     except Exception as e:
         print(f"Error extracting room area: {e}")
         return None
-        
-def extract_room_price(row):
-    """Extract room price from HTML row.
-    
-    Args:
-        row: BeautifulSoup row element containing room details
-        
-    Returns:
-        Price as string (with commas removed) or None if not found
-    """
+
+def extract_room_price(row) -> str:
+    """Extract room price from HTML row."""
     try:
         # Check common price display element
         price_element = row.find('span', class_='prco-valign-middle-helper')
@@ -120,32 +95,19 @@ def extract_room_price(row):
                     return match[-1].replace(',', '')
 
         return None
-
     except Exception as e:
         print(f"Error extracting room price: {e}")
         return None
 
-async def parse_hotel_page(html: str, hotel_name: str, check_in_date: str, check_out_date: str, url: str) -> pd.DataFrame:
-    """Parse hotel page HTML and extract room details.
-    
-    Args:
-        html: HTML content of the hotel page
-        hotel_name: Name of the hotel
-        check_in_date: Check-in date in YYYY-MM-DD format
-        check_out_date: Check-out date in YYYY-MM-DD format
-        url: URL of the hotel page
-        
-    Returns:
-        DataFrame containing parsed room details
-    """
+async def parse_hotel_page(html: str, hotel_name: str, check_in_date: str, 
+                         check_out_date: str, url: str) -> pd.DataFrame:
+    """Parse hotel page HTML and extract room details."""
     soup = BeautifulSoup(html, 'html.parser')
     data = []
     
-    # Extract hotel display name
     display_name = soup.find('h2', {'class': 'hp__hotel-name'})
     hotel_display_name = display_name.get_text(strip=True) if display_name else hotel_name
     
-    # Find all room tables
     tables = soup.find_all('table', class_='hprt-table')
     for table in tables:
         for row in table.find_all('tr', {'data-block-id': True}):
@@ -157,7 +119,6 @@ async def parse_hotel_page(html: str, hotel_name: str, check_in_date: str, check
             
             if area_info:
                 room_area, area_unit = area_info
-                
                 data.append({
                     'hotel_name': hotel_display_name,
                     'check_in_date': check_in_date,
@@ -171,22 +132,24 @@ async def parse_hotel_page(html: str, hotel_name: str, check_in_date: str, check
     
     return pd.DataFrame(data)
 
+# Data gathering functions
+async def get_hotel_details_async(session: aiohttp.ClientSession, hotel_url_name: str, 
+                                check_in_date: str, check_out_date: str, 
+                                country: str, currency: str) -> pd.DataFrame:
+    """Fetch and parse hotel details for a specific date range."""
+    url = f'https://www.booking.com/hotel/{country}/{hotel_url_name}.en-gb.html?checkin={check_in_date};checkout={check_out_date};dist=0;group_adults=2;group_children=0;selected_currency={currency}'
+    
+    html = await fetch_hotel_page(session, url)
+    if not html:
+        return pd.DataFrame()
+    
+    hotel_details = await parse_hotel_page(html, hotel_url_name, check_in_date, check_out_date, url)
+    return hotel_details
+
 async def gather_hotel_data(hotel_list: List[str], date_ranges: List[Tuple[str, str]], 
                           country: str, currency: str, progress_callback=None, 
-                          max_concurrent: int = 10) -> pd.DataFrame:
-    """Gather hotel data for all hotels and date ranges asynchronously.
-    
-    Args:
-        hotel_list: List of hotel URL names
-        date_ranges: List of (check_in, check_out) date tuples
-        country: 2-letter country code
-        currency: 3-letter currency code
-        progress_callback: Function to call with progress updates
-        max_concurrent: Maximum concurrent requests
-        
-    Returns:
-        Combined DataFrame of all hotel data
-    """
+                          max_concurrent: int = DEFAULT_MAX_CONCURRENT) -> pd.DataFrame:
+    """Gather hotel data for all hotels and date ranges asynchronously."""
     connector = aiohttp.TCPConnector(limit=max_concurrent)
     timeout = aiohttp.ClientTimeout(total=30)
     
@@ -197,7 +160,10 @@ async def gather_hotel_data(hotel_list: List[str], date_ranges: List[Tuple[str, 
         
         for hotel_name in hotel_list:
             for date_range in date_ranges:
-                task = get_hotel_details_async(session, hotel_name, date_range[0], date_range[1], country, currency)
+                task = get_hotel_details_async(
+                    session, hotel_name, date_range[0], date_range[1], 
+                    country, currency
+                )
                 tasks.append(task)
         
         results = []
@@ -208,45 +174,20 @@ async def gather_hotel_data(hotel_list: List[str], date_ranges: List[Tuple[str, 
             if progress_callback:
                 progress_callback(completed_requests, total_requests)
         
-        # Handle exceptions and filter out empty DataFrames
-        valid_dfs = []
-        for result in results:
-            if isinstance(result, Exception):
-                print(f"Error in task: {str(result)}")
-            elif not result.empty:
-                valid_dfs.append(result)
-        
+        valid_dfs = [df for df in results if isinstance(df, pd.DataFrame) and not df.empty]
         return pd.concat(valid_dfs, ignore_index=True) if valid_dfs else pd.DataFrame()
 
 def main_async(hotel_list: List[str], date_ranges: List[Tuple[str, str]], 
                country: str = "sg", currency: str = "SGD", 
                progress_callback=None) -> pd.DataFrame:
-    """Main async function to gather all hotel data.
-    
-    Args:
-        hotel_list: List of hotel URL names
-        date_ranges: List of (check_in, check_out) date tuples
-        country: 2-letter country code
-        currency: 3-letter currency code
-        progress_callback: Function to call with progress updates
-        
-    Returns:
-        Combined DataFrame of all hotel data
-    """
+    """Main async function to gather all hotel data."""
     return asyncio.run(gather_hotel_data(
         hotel_list, date_ranges, country, currency, progress_callback
     ))
 
-def generate_date_ranges(start_date: datetime.date, delta: int) -> List[Tuple[str, str]]:
-    """Generate random 8-day date ranges within each month for a given time period.
-    
-    Args:
-        start_date: Starting date for generating ranges
-        delta: Number of days from start_date to generate ranges for
-        
-    Returns:
-        List of (check_in, check_out) date tuples in YYYY-MM-DD format
-    """
+# Date utility functions
+def generate_date_ranges(start_date: datetime.date, delta: int = DEFAULT_SEARCH_DAYS) -> List[Tuple[str, str]]:
+    """Generate random date ranges within each month for a given time period."""
     if not start_date:
         return []
         
@@ -259,10 +200,9 @@ def generate_date_ranges(start_date: datetime.date, delta: int) -> List[Tuple[st
         next_month = month_start.replace(day=28) + timedelta(days=4)
         month_end = next_month - timedelta(days=next_month.day)
         
-        # Generate random 8-day range within the month
-        start_day = random.randint(1, max(1, month_end.day - 7))
+        start_day = random.randint(1, max(1, month_end.day - DEFAULT_STAY_DURATION))
         range_start = month_start.replace(day=start_day)
-        range_end = range_start + timedelta(days=7)
+        range_end = range_start + timedelta(days=DEFAULT_STAY_DURATION)
         
         date_ranges.append((
             range_start.strftime("%Y-%m-%d"), 
@@ -272,12 +212,9 @@ def generate_date_ranges(start_date: datetime.date, delta: int) -> List[Tuple[st
     
     return date_ranges
 
+# UI components
 def country_currency_selectors() -> Tuple[str, str]:
-    """Create country and currency selection widgets.
-    
-    Returns:
-        Tuple of (country_code, currency_code)
-    """
+    """Create country and currency selection widgets."""
     col1, col2 = st.columns(2)
     
     with col1:
@@ -302,16 +239,7 @@ def country_currency_selectors() -> Tuple[str, str]:
 def multi_string_input(label: str = "Enter hotel names (one per line)",
                       default_items: List[str] = None,
                       key: str = "hotel_names") -> List[str]:
-    """Create a text area for bulk hotel name input.
-    
-    Args:
-        label: Label to display above the component
-        default_items: Default list of hotel names
-        key: Unique key for session state
-        
-    Returns:
-        List of non-empty hotel names in lowercase
-    """
+    """Create a text area for bulk hotel name input."""
     if default_items is None:
         default_items = [""]
     
@@ -333,77 +261,79 @@ def multi_string_input(label: str = "Enter hotel names (one per line)",
     
     return list(map(lambda x: x.lower(), strings))
 
-# Streamlit UI
-st.set_page_config(
-    page_title="Hotel Scraper",
-    page_icon="🏨",
-    layout="wide"
-)
-
-st.title("Hotel Room Price Scraper")
-
-country, currency = country_currency_selectors()
-st.write(f"Selected: {country} | {currency}")
-
-hotel_list = multi_string_input("Enter hotel URL names (one per line):")
-
-st.write("Current items:", hotel_list)
-
-# Date input for start date
-start_date = st.date_input("Select a start date:")
-
-if st.button("Process Data"):
-    if hotel_list and start_date:
-        # Initialize progress bar
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+def process_results(df: pd.DataFrame) -> pd.DataFrame:
+    """Process and format the results DataFrame."""
+    if df.empty:
+        return df
         
-        def update_progress(current, total):
-            progress = current / total
-            progress_bar.progress(progress)
-            status_text.text(f"Processing {current} of {total} requests...")
-        
-        # Generate date ranges
-        date_ranges = generate_date_ranges(start_date, 365)
-        
-        # Process data with progress updates
-        result_df = main_async(
-            hotel_list, 
-            date_ranges, 
-            country=country.lower(), 
-            currency=currency,
-            progress_callback=update_progress
-        )
-        
-        # Clear progress indicators
-        progress_bar.empty()
-        status_text.empty()
-        
-        if len(result_df) > 0:
-            # Process and display results
-            result_df = result_df.dropna(subset=['room_name'])
-            result_df = (result_df
-                        .sort_values('room_price')
-                        .groupby(['check_in_date', 'check_out_date', 'room_name'], as_index=False)
-                        .first()
-                        .sort_values(['check_in_date', 'room_price'])
-                        .reset_index(drop=True))
+    df = df.dropna(subset=['room_name'])
+    df = (df
+          .sort_values('room_price')
+          .groupby(['check_in_date', 'check_out_date', 'room_name'], as_index=False)
+          .first()
+          .sort_values(['check_in_date', 'room_price'])
+          .reset_index(drop=True))
+    
+    column_order = ['hotel_name'] + [col for col in df.columns if col != 'hotel_name']
+    return df[column_order]
+
+# Main UI
+def main():
+    st.set_page_config(
+        page_title="Hotel Scraper",
+        page_icon="🏨",
+        layout="wide"
+    )
+
+    st.title("Hotel Room Price Scraper")
+
+    country, currency = country_currency_selectors()
+    st.write(f"Selected: {country} | {currency}")
+
+    hotel_list = multi_string_input("Enter hotel URL names (one per line):")
+    st.write("Current items:", hotel_list)
+
+    start_date = st.date_input("Select a start date:")
+
+    if st.button("Process Data"):
+        if hotel_list and start_date:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            column_order = ['hotel_name'] + [col for col in result_df.columns if col != 'hotel_name']
-            result_df = result_df[column_order]
+            def update_progress(current, total):
+                progress = current / total
+                progress_bar.progress(progress)
+                status_text.text(f"Processing {current} of {total} requests...")
             
-            st.success("Data processing complete!")
-            st.dataframe(result_df)
-            
-            # Add download button
-            csv = result_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download CSV",
-                data=csv,
-                file_name='hotel_prices.csv',
-                mime='text/csv'
+            date_ranges = generate_date_ranges(start_date)
+            result_df = main_async(
+                hotel_list, 
+                date_ranges, 
+                country=country.lower(), 
+                currency=currency,
+                progress_callback=update_progress
             )
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            if len(result_df) > 0:
+                result_df = process_results(result_df)
+                
+                st.success("Data processing complete!")
+                st.dataframe(result_df)
+                
+                csv = result_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name='hotel_prices.csv',
+                    mime='text/csv'
+                )
+            else:
+                st.warning("No data found. Please check your inputs and try again.")
         else:
-            st.warning("No data found. Please check your inputs and try again.")
-    else:
-        st.warning("Please enter at least one hotel name and select a start date. Hotel must exist within the country selected.")
+            st.warning("Please enter at least one hotel name and select a start date. Hotel must exist within the country selected.")
+
+if __name__ == "__main__":
+    main()
