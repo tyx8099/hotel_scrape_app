@@ -1,0 +1,4 @@
+aiohttp==3.11.16
+beautifulsoup4==4.12.2
+pycountry==24.6.1
+requests==2.31.0
